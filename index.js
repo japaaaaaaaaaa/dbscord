@@ -12,12 +12,6 @@
 
     storage.hidden ??= false;
 
-    function isRevengeSection(section) {
-        if (!section || !section.label) return false;
-        var lbl = section.label.toLowerCase();
-        return lbl.includes("revenge") || lbl.includes("bunny") || lbl.includes("vendetta");
-    }
-
     var patches = [];
 
     var C = {
@@ -26,7 +20,7 @@
             return React.createElement(ReactNative.ScrollView, null,
                 React.createElement(FormSwitchRow, {
                     label: "Hide Revenge section",
-                    subLabel: "Removes the Revenge section from Discord's Settings list.",
+                    subLabel: "Check debug logs for section labels if not working",
                     value: storage.hidden,
                     onValueChange: function(v) { storage.hidden = v; }
                 })
@@ -34,49 +28,41 @@
         },
 
         onLoad: function() {
-            // Primary method: patch createList which builds the sections array
             var createListModule = findByProps("createList");
             if (createListModule) {
                 patches.push(after("createList", createListModule, function(args, ret) {
-                    if (!storage.hidden) return ret;
                     var config = args[0];
                     if (config && config.sections && Array.isArray(config.sections)) {
+                        // Log ALL section labels so we know what to filter
+                        console.log("[StealthRevenge] All sections:", JSON.stringify(
+                            config.sections.map(function(s) { return { label: s.label, title: s.title, settings: s.settings }; })
+                        ));
+                        if (!storage.hidden) return ret;
                         config.sections = config.sections.filter(function(s) {
-                            return !isRevengeSection(s);
+                            var lbl = (s.label || s.title || "").toLowerCase();
+                            return !lbl.includes("revenge") && !lbl.includes("bunny") && !lbl.includes("vendetta");
                         });
                     }
                     return ret;
                 }));
             }
 
-            // Fallback: patch SettingsOverviewScreen render
             var OverviewScreen = findByName("SettingsOverviewScreen", false);
             if (OverviewScreen) {
                 patches.push(after("default", OverviewScreen, function(_args, res) {
-                    if (!storage.hidden) return res;
-
-                    // Find the node with a sections prop and filter it
-                    function stripSections(node) {
-                        if (node == null || typeof node !== "object") return node;
-                        if (Array.isArray(node)) return node.map(stripSections).filter(Boolean);
+                    // Walk tree looking for sections prop and log it
+                    function walk(node) {
+                        if (node == null || typeof node !== "object") return;
+                        if (Array.isArray(node)) { node.forEach(walk); return; }
                         if (node.props && Array.isArray(node.props.sections)) {
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            c.props.sections = node.props.sections.filter(function(s) {
-                                return !isRevengeSection(s);
-                            });
-                            return c;
+                            console.log("[StealthRevenge] OverviewScreen sections:", JSON.stringify(
+                                node.props.sections.map(function(s) { return { label: s.label, title: s.title }; })
+                            ));
                         }
-                        if (node.props && node.props.children != null) {
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            c.props.children = stripSections(node.props.children);
-                            return c;
-                        }
-                        return node;
+                        if (node.props && node.props.children) walk(node.props.children);
                     }
-
-                    return stripSections(res);
+                    walk(res);
+                    return res;
                 }));
             }
         },
