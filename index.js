@@ -1,210 +1,163 @@
-(function(u,y,a,w,l,d,b,s){"use strict";
-const{ScrollView:x,Text:F,View:S,TextInput:_,Button:f}=y.General,{FormRow:v,FormIcon:i,FormDivider:g,FormSwitchRow:m}=y.Forms;
+"use strict";
 
-const T=function(t){return t.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");};
+const { after } = vendetta.patcher;
+const { findByName, findByProps } = vendetta.metro;
+const { React } = vendetta.metro.common;
+const { storage } = vendetta.plugin;
+const { useProxy } = vendetta.storage;
+const { Forms } = vendetta.ui.components;
 
-const E=function(){
-  if(!a.storage.enabled)return[];
-  return JSON.parse(a.storage.rules||"[]").map(function(t){
-    try{
-      if(t.find==="")return null;
-      return{re:new RegExp(t.regex?t.find:T(t.find),t.ci?"gi":"g"),to:t.replace};
-    }catch{return null;}
-  }).filter(Boolean);
-};
-
-a.storage.rules??=JSON.stringify([{find:"old",replace:"new",regex:false,ci:false}]);
-a.storage.enabled??=true;
-a.storage.showEditor??=false;
-a.storage.defaultFind??="";
-
-let h=[];
-let patched=false;
-
-function applyRules(rules,str){
-  if(typeof str!=="string")return str;
-  for(const e of rules)str=str.replace(e.re,e.to);
-  return str;
+function isRevengeSection(section) {
+    if (!section || !section.label) return false;
+    const lbl = section.label.toLowerCase();
+    return lbl.includes("revenge") || lbl.includes("bunny") || lbl.includes("vendetta");
 }
 
-function walkAST(rules,arr){
-  if(!Array.isArray(arr))return;
-  for(const node of arr){
-    if(!node||typeof node!=="object")continue;
-    if(typeof node.content==="string")node.content=applyRules(rules,node.content);
-    if(Array.isArray(node.content))walkAST(rules,node.content);
-  }
+function StealthToggleRow() {
+    useProxy(storage);
+    return React.createElement(Forms.FormSwitchRow, {
+        label: "Hide Revenge in Settings",
+        subLabel: "Removes the Revenge section from the Settings list",
+        value: storage.hidden ?? false,
+        onValueChange: (v) => { storage.hidden = v; },
+    });
 }
 
-function processNode(rules,node){
-  if(!node||typeof node!=="object")return;
-  if(node.message){
-    const msg=node.message;
-    if(typeof msg.content==="string")msg.content=applyRules(rules,msg.content);
-    if(Array.isArray(msg.content))walkAST(rules,msg.content);
-    if(msg.author){
-      if(msg.author.username)msg.author.username=applyRules(rules,msg.author.username);
-      if(msg.author.globalName)msg.author.globalName=applyRules(rules,msg.author.globalName);
-    }
-    if(typeof msg.edited==="string")msg.edited=applyRules(rules,msg.edited);
-  }
-  if(typeof node.username==="string")node.username=applyRules(rules,node.username);
-  if(typeof node.nick==="string")node.nick=applyRules(rules,node.nick);
-  if(typeof node.text==="string")node.text=applyRules(rules,node.text);
-}
-
-// Force Discord to re-render messages in the current channel
-function forceRefresh(){
-  try{
-    const FD=s.FluxDispatcher;
-    const SelectedChannelStore=d.findByStoreName("SelectedChannelStore");
-    if(!SelectedChannelStore)return;
-    const channelId=SelectedChannelStore.getChannelId&&SelectedChannelStore.getChannelId();
-    const guildId=SelectedChannelStore.getGuildId&&SelectedChannelStore.getGuildId();
-    if(!channelId)return;
-    // Dispatch LOAD_MESSAGES_AROUND to force a message reload for the current channel
-    FD.dispatch({type:"LOAD_MESSAGES_AROUND",channelId:channelId});
-  }catch(e){console.log("[TR] forceRefresh error",e);}
-}
-
-const U=function(){
-  if(patched)return;
-
-  let registered=false;
-
-  // Strategy 1: DCDChatManager.updateRows (modern Discord mobile)
-  const RN=y.General;
-  const DCDChatManager=RN&&RN.NativeModules&&RN.NativeModules.DCDChatManager;
-  if(DCDChatManager&&typeof DCDChatManager.updateRows==="function"){
-    console.log("[TR] patching DCDChatManager.updateRows");
-    h.push(b.before("updateRows",DCDChatManager,function(args){
-      try{
-        const rules=E();
-        if(!rules.length)return;
-        const rows=JSON.parse(args[1]);
-        for(const row of rows)processNode(rules,row);
-        args[1]=JSON.stringify(rows);
-      }catch(err){console.log("[TR] updateRows error",err);}
-    }));
-    registered=true;
-  }
-
-  // Strategy 2: RowManager.generate via findByName
-  const RM=d.findByName("RowManager");
-  if(RM&&RM.prototype&&typeof RM.prototype.generate==="function"){
-    console.log("[TR] patching RowManager.generate");
-    h.push(b.before("generate",RM.prototype,function([r]){
-      try{
-        const rules=E();
-        if(!rules.length)return;
-        processNode(rules,r);
-      }catch(err){console.log("[TR] generate error",err);}
-    }));
-    registered=true;
-  }
-
-  // Strategy 3: RowManager via findByProps
-  if(!RM){
-    const RMM=d.findByProps("RowManager");
-    const RMC=RMM&&RMM.RowManager;
-    if(RMC&&RMC.prototype&&typeof RMC.prototype.generate==="function"){
-      console.log("[TR] patching RowManager.generate (findByProps)");
-      h.push(b.before("generate",RMC.prototype,function([r]){
-        try{
-          const rules=E();
-          if(!rules.length)return;
-          processNode(rules,r);
-        }catch(err){console.log("[TR] generate error (props)",err);}
-      }));
-      registered=true;
-    }
-  }
-
-  // Also patch FluxDispatcher to catch CHANNEL_SELECT and force re-render
-  // This ensures already-cached messages get re-processed when navigating
-  try{
-    const FD=s.FluxDispatcher;
-    if(FD&&typeof FD.dispatch==="function"){
-      h.push(b.after("dispatch",FD,function(args){
-        try{
-          const event=args[0];
-          if(event&&(event.type==="CHANNEL_SELECT"||event.type==="CHANNEL_SWITCH")){
-            // Give Discord a tick to render, then force a reload
-            setTimeout(forceRefresh,300);
-          }
-        }catch{}
-      }));
-    }
-  }catch(e){console.log("[TR] FluxDispatcher patch error",e);}
-
-  if(registered){
-    patched=true;
-    // Immediately refresh current channel so already-loaded messages get processed
-    setTimeout(forceRefresh,500);
-    console.log("[TR] patched OK");
-  }else{
-    console.log("[TR] nothing found, retrying...");
-    setTimeout(U,1000);
-  }
-};
-
-// Settings UI
-const A=function(){
-  const t=JSON.parse(a.storage.rules||"[]");
-  const c=function(o){a.storage.rules=JSON.stringify(o);};
-  const R=function(){return c([...t,{find:a.storage.defaultFind||"",replace:"",regex:false,ci:false}]);};
-  const p=function(o){return c(t.filter(function(e,n){return n!==o;}));};
-  const r=function(o,e){return c(t.map(function(n,D){return D===o?{...n,...e}:n;}));};
-  return React.createElement(x,{style:{paddingBottom:100}},
-    React.createElement(F,{style:{margin:12,fontSize:16,fontWeight:"bold"}},"Replacement Rules"),
-    t.map(function(o,e){
-      return React.createElement(S,{key:e,style:{margin:8,padding:8,borderWidth:1,borderColor:"#666",borderRadius:6}},
-        React.createElement(_,{placeholder:"Text to find",value:o.find,onChangeText:function(n){return r(e,{find:n});},style:{borderWidth:1,borderColor:"#888",padding:6,marginBottom:6,color:"#fff"}}),
-        React.createElement(_,{placeholder:"Replace with",value:o.replace,onChangeText:function(n){return r(e,{replace:n});},style:{borderWidth:1,borderColor:"#888",padding:6,marginBottom:6,color:"#fff"}}),
-        React.createElement(m,{label:"Case-insensitive",leading:React.createElement(i,{source:l.getAssetIDByName("ic_visibility_24px")}),value:o.ci,onValueChange:function(n){return r(e,{ci:n});}}),
-        React.createElement(m,{label:"Regular expression",leading:React.createElement(i,{source:l.getAssetIDByName("ic_search_24px")}),value:o.regex,onValueChange:function(n){return r(e,{regex:n});}}),
-        React.createElement(f,{title:"Delete rule",onPress:function(){return p(e);},color:"red"}),
-        React.createElement(g,null)
-      );
-    }),
-    React.createElement(f,{title:"Add rule",onPress:R})
-  );
-};
-
-var C={
-  settings:function(){
-    w.useProxy(a.storage);
-    return React.createElement(x,null,
-      React.createElement(m,{label:"Enable replacements",leading:React.createElement(i,{source:l.getAssetIDByName("ic_message_edit")}),value:a.storage.enabled,onValueChange:function(t){a.storage.enabled=t;}}),
-      React.createElement(g,null),
-      React.createElement(S,{style:{margin:8,padding:8,borderWidth:1,borderColor:"#444",borderRadius:6}},
-        React.createElement(F,{style:{color:"#aaa",fontSize:13,marginBottom:4}},'Default "Find" text'),
-        React.createElement(F,{style:{color:"#888",fontSize:11,marginBottom:6}},"New rules will be pre-filled with this value"),
-        React.createElement(_,{placeholder:"e.g. 123456789",value:a.storage.defaultFind,onChangeText:function(t){a.storage.defaultFind=t;},style:{borderWidth:1,borderColor:"#888",padding:6,color:"#fff",borderRadius:4}})
-      ),
-      React.createElement(g,null),
-      React.createElement(v,{label:"Manage rules",subLabel:"Add, edit or delete replacement strings",leading:React.createElement(i,{source:l.getAssetIDByName("ic_settings_24px")}),trailing:v.Arrow,onPress:function(){a.storage.showEditor=!a.storage.showEditor;}}),
-      a.storage.showEditor&&React.createElement(React.Fragment,null,
-        React.createElement(g,null),
-        React.createElement(A,null),
-        React.createElement(f,{title:"Close editor",onPress:function(){a.storage.showEditor=false;}})
-      )
+function Settings() {
+    useProxy(storage);
+    return React.createElement(
+        vendetta.metro.common.ReactNative.ScrollView,
+        null,
+        React.createElement(Forms.FormSwitchRow, {
+            label: "Hide Revenge section",
+            subLabel: "Removes the Revenge section from Discord's Settings list. You can still access these settings from the plugin's own settings page.",
+            value: storage.hidden ?? false,
+            onValueChange: (v) => { storage.hidden = v; },
+        })
     );
-  },
-  onLoad(){
-    console.log("[TR] onLoad");
-    h.forEach(function(t){try{t&&t();}catch{}});
-    h=[];
-    patched=false;
-    U();
-  },
-  onUnload(){
-    console.log("[TR] onUnload");
-    h.forEach(function(t){try{t&&t();}catch{}});
-    h=[];
-    patched=false;
-  }
-};
+}
 
-return u.default=C,Object.defineProperty(u,"__esModule",{value:!0}),u;
-})({},vendetta.ui.components,vendetta.plugin,vendetta.storage,vendetta.ui.assets,vendetta.metro,vendetta.patcher,vendetta.metro.common);
+const patches = [];
+
+export default {
+    onLoad() {
+        storage.hidden ??= false;
+
+        // Patch 1: strip from rendered React tree
+        const OverviewScreen = findByName("UserSettingsOverviewScreen", false);
+        if (OverviewScreen) {
+            const patch = after("default", OverviewScreen, (_args, res) => {
+                if (!storage.hidden) return res;
+
+                function strip(node) {
+                    if (node == null || typeof node !== "object") return node;
+                    if (Array.isArray(node)) return node.map(strip).filter(Boolean);
+
+                    if (node.props?.label && isRevengeSection(node.props)) return null;
+
+                    if (node.props?.sections) {
+                        const clone = Object.assign({}, node);
+                        clone.props = Object.assign({}, node.props);
+                        clone.props.sections = node.props.sections.filter(s => !isRevengeSection(s));
+                        return clone;
+                    }
+
+                    if (node.props?.children != null) {
+                        const clone = Object.assign({}, node);
+                        clone.props = Object.assign({}, node.props);
+                        clone.props.children = strip(node.props.children);
+                        return clone;
+                    }
+
+                    return node;
+                }
+
+                return strip(res);
+            });
+            patches.push(patch);
+        }
+
+        // Patch 2: filter SETTING_RENDERER_CONFIG
+        const SettingSections = findByProps("SETTING_RENDERER_CONFIG");
+        if (SettingSections?.SETTING_RENDERER_CONFIG) {
+            const original = SettingSections.SETTING_RENDERER_CONFIG;
+
+            Object.defineProperty(SettingSections, "SETTING_RENDERER_CONFIG", {
+                configurable: true,
+                enumerable: true,
+                get() {
+                    if (!storage.hidden) return original;
+                    const filtered = {};
+                    for (const [key, val] of Object.entries(original)) {
+                        if (!isRevengeSection({ label: key }) && !isRevengeSection(val)) {
+                            filtered[key] = val;
+                        }
+                    }
+                    return filtered;
+                },
+            });
+
+            patches.push(() => {
+                Object.defineProperty(SettingSections, "SETTING_RENDERER_CONFIG", {
+                    configurable: true,
+                    enumerable: true,
+                    value: original,
+                    writable: true,
+                });
+            });
+        }
+
+        // Patch 3: inject toggle into App Settings screen
+        const AppScreen =
+            findByName("AppSettingsScreen", false) ??
+            findByName("AppearanceSettingsScreen", false);
+
+        if (AppScreen) {
+            const patch = after("default", AppScreen, (_args, res) => {
+                let injected = false;
+
+                function inject(node) {
+                    if (node == null || typeof node !== "object") return node;
+                    if (Array.isArray(node)) return node.map(inject);
+
+                    const type = node.type?.displayName ?? node.type?.name ?? "";
+
+                    if (!injected && type === "ScrollView") {
+                        injected = true;
+                        const clone = Object.assign({}, node);
+                        clone.props = Object.assign({}, node.props);
+                        const existing = Array.isArray(node.props.children)
+                            ? node.props.children
+                            : node.props.children != null
+                            ? [node.props.children]
+                            : [];
+                        clone.props.children = [
+                            ...existing,
+                            React.createElement(StealthToggleRow, { key: "stealth-revenge" }),
+                        ];
+                        return clone;
+                    }
+
+                    if (node.props?.children != null) {
+                        const clone = Object.assign({}, node);
+                        clone.props = Object.assign({}, node.props);
+                        clone.props.children = inject(node.props.children);
+                        return clone;
+                    }
+
+                    return node;
+                }
+
+                return inject(res);
+            });
+            patches.push(patch);
+        }
+    },
+
+    onUnload() {
+        for (const unpatch of patches) unpatch();
+        patches.length = 0;
+    },
+
+    settings: Settings,
+};
