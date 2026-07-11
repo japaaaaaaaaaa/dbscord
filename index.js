@@ -18,7 +18,6 @@ a.storage.enabled??=true;
 a.storage.showEditor??=false;
 a.storage.defaultFind??="";
 
-// unpatch functions and a flag to prevent double-patching
 let h=[];
 let patched=false;
 
@@ -54,12 +53,22 @@ function processNode(rules,node){
   if(typeof node.text==="string")node.text=applyRules(rules,node.text);
 }
 
+// Force Discord to re-render messages in the current channel
+function forceRefresh(){
+  try{
+    const FD=s.FluxDispatcher;
+    const SelectedChannelStore=d.findByStoreName("SelectedChannelStore");
+    if(!SelectedChannelStore)return;
+    const channelId=SelectedChannelStore.getChannelId&&SelectedChannelStore.getChannelId();
+    const guildId=SelectedChannelStore.getGuildId&&SelectedChannelStore.getGuildId();
+    if(!channelId)return;
+    // Dispatch LOAD_MESSAGES_AROUND to force a message reload for the current channel
+    FD.dispatch({type:"LOAD_MESSAGES_AROUND",channelId:channelId});
+  }catch(e){console.log("[TR] forceRefresh error",e);}
+}
+
 const U=function(){
-  // Guard: never register patches more than once
-  if(patched){
-    console.log("[TR] already patched, skipping");
-    return;
-  }
+  if(patched)return;
 
   let registered=false;
 
@@ -80,10 +89,10 @@ const U=function(){
     registered=true;
   }
 
-  // Strategy 2: RowManager.generate via findByName (older Discord)
+  // Strategy 2: RowManager.generate via findByName
   const RM=d.findByName("RowManager");
   if(RM&&RM.prototype&&typeof RM.prototype.generate==="function"){
-    console.log("[TR] patching RowManager.generate (findByName)");
+    console.log("[TR] patching RowManager.generate");
     h.push(b.before("generate",RM.prototype,function([r]){
       try{
         const rules=E();
@@ -94,7 +103,7 @@ const U=function(){
     registered=true;
   }
 
-  // Strategy 3: RowManager via findByProps (older Discord fallback)
+  // Strategy 3: RowManager via findByProps
   if(!RM){
     const RMM=d.findByProps("RowManager");
     const RMC=RMM&&RMM.RowManager;
@@ -111,11 +120,30 @@ const U=function(){
     }
   }
 
+  // Also patch FluxDispatcher to catch CHANNEL_SELECT and force re-render
+  // This ensures already-cached messages get re-processed when navigating
+  try{
+    const FD=s.FluxDispatcher;
+    if(FD&&typeof FD.dispatch==="function"){
+      h.push(b.after("dispatch",FD,function(args){
+        try{
+          const event=args[0];
+          if(event&&(event.type==="CHANNEL_SELECT"||event.type==="CHANNEL_SWITCH")){
+            // Give Discord a tick to render, then force a reload
+            setTimeout(forceRefresh,300);
+          }
+        }catch{}
+      }));
+    }
+  }catch(e){console.log("[TR] FluxDispatcher patch error",e);}
+
   if(registered){
     patched=true;
-    console.log("[TR] patches registered, patched=true");
+    // Immediately refresh current channel so already-loaded messages get processed
+    setTimeout(forceRefresh,500);
+    console.log("[TR] patched OK");
   }else{
-    console.log("[TR] nothing found yet, retrying in 1s...");
+    console.log("[TR] nothing found, retrying...");
     setTimeout(U,1000);
   }
 };
@@ -165,7 +193,6 @@ var C={
   },
   onLoad(){
     console.log("[TR] onLoad");
-    // Reset state cleanly on each load, in case onUnload didn't fire
     h.forEach(function(t){try{t&&t();}catch{}});
     h=[];
     patched=false;
