@@ -2,10 +2,11 @@
     "use strict";
 
     var FormSwitchRow = y.Forms.FormSwitchRow;
-    var ScrollView = vendetta.metro.common.ReactNative.ScrollView;
     var React = vendetta.metro.common.React;
+    var ReactNative = vendetta.metro.common.ReactNative;
     var after = b.after;
     var findByName = d.findByName;
+    var findByProps = d.findByProps;
     var storage = a.storage;
     var useProxy = w.useProxy;
 
@@ -22,7 +23,7 @@
     var C = {
         settings: function() {
             useProxy(storage);
-            return React.createElement(ScrollView, null,
+            return React.createElement(ReactNative.ScrollView, null,
                 React.createElement(FormSwitchRow, {
                     label: "Hide Revenge section",
                     subLabel: "Removes the Revenge section from Discord's Settings list.",
@@ -33,61 +34,49 @@
         },
 
         onLoad: function() {
-            var OverviewScreen = findByName("UserSettingsOverviewScreen", false);
-            if (OverviewScreen) {
-                patches.push(after("default", OverviewScreen, function(_args, res) {
-                    if (!storage.hidden) return res;
-                    function strip(node) {
-                        if (node == null || typeof node !== "object") return node;
-                        if (Array.isArray(node)) return node.map(strip).filter(Boolean);
-                        if (node.props && node.props.label && isRevengeSection(node.props)) return null;
-                        if (node.props && node.props.sections) {
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            c.props.sections = node.props.sections.filter(function(s) { return !isRevengeSection(s); });
-                            return c;
-                        }
-                        if (node.props && node.props.children != null) {
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            c.props.children = strip(node.props.children);
-                            return c;
-                        }
-                        return node;
+            // Primary method: patch createList which builds the sections array
+            var createListModule = findByProps("createList");
+            if (createListModule) {
+                patches.push(after("createList", createListModule, function(args, ret) {
+                    if (!storage.hidden) return ret;
+                    var config = args[0];
+                    if (config && config.sections && Array.isArray(config.sections)) {
+                        config.sections = config.sections.filter(function(s) {
+                            return !isRevengeSection(s);
+                        });
                     }
-                    return strip(res);
+                    return ret;
                 }));
             }
 
-            var AppScreen = findByName("AppSettingsScreen", false) || findByName("AppearanceSettingsScreen", false);
-            if (AppScreen) {
-                patches.push(after("default", AppScreen, function(_args, res) {
-                    var injected = false;
-                    function inject(node) {
+            // Fallback: patch SettingsOverviewScreen render
+            var OverviewScreen = findByName("SettingsOverviewScreen", false);
+            if (OverviewScreen) {
+                patches.push(after("default", OverviewScreen, function(_args, res) {
+                    if (!storage.hidden) return res;
+
+                    // Find the node with a sections prop and filter it
+                    function stripSections(node) {
                         if (node == null || typeof node !== "object") return node;
-                        if (Array.isArray(node)) return node.map(inject);
-                        var typeName = (node.type && (node.type.displayName || node.type.name)) || "";
-                        if (!injected && typeName === "ScrollView") {
-                            injected = true;
+                        if (Array.isArray(node)) return node.map(stripSections).filter(Boolean);
+                        if (node.props && Array.isArray(node.props.sections)) {
                             var c = Object.assign({}, node);
                             c.props = Object.assign({}, node.props);
-                            var kids = Array.isArray(node.props.children)
-                                ? node.props.children
-                                : node.props.children != null ? [node.props.children] : [];
-                            c.props.children = kids.concat([
-                                React.createElement(C.settings, { key: "stealth-revenge" })
-                            ]);
+                            c.props.sections = node.props.sections.filter(function(s) {
+                                return !isRevengeSection(s);
+                            });
                             return c;
                         }
                         if (node.props && node.props.children != null) {
                             var c = Object.assign({}, node);
                             c.props = Object.assign({}, node.props);
-                            c.props.children = inject(node.props.children);
+                            c.props.children = stripSections(node.props.children);
                             return c;
                         }
                         return node;
                     }
-                    return inject(res);
+
+                    return stripSections(res);
                 }));
             }
         },
