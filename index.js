@@ -12,6 +12,16 @@
 
     var patches = [];
 
+    // A dummy renderer config entry that makes the row invisible
+    // It needs a "parent" so toSettingListItems doesn't crash
+    function makeDummy(orig) {
+        return Object.assign({}, orig, {
+            // usePredicate returning false hides the row without removing it
+            usePredicate: function() { return false; },
+            predicate: function() { return false; }
+        });
+    }
+
     var C = {
         settings: function() {
             useProxy(storage);
@@ -32,29 +42,32 @@
             var orig = settingConstants.SETTING_RENDERER_CONFIG;
             var current = orig;
 
-            // Instead of touching sections, we hide the Revenge rows by removing
-            // them from SETTING_RENDERER_CONFIG. Discord won't render rows it
-            // can't find in this map.
             Object.defineProperty(settingConstants, "SETTING_RENDERER_CONFIG", {
                 configurable: true,
                 enumerable: true,
                 get: function() {
                     if (!storage.hidden) return current;
 
-                    var filtered = {};
+                    var result = {};
                     var keys = Object.keys(current);
                     for (var i = 0; i < keys.length; i++) {
                         var k = keys[i];
                         var kl = k.toLowerCase();
-                        if (!kl.includes("bunny") &&
-                            !kl.includes("vendetta") &&
-                            !kl.includes("revenge") &&
-                            k !== "VendettaCustomPage" &&
-                            k !== "BUNNY_CUSTOM_PAGE") {
-                            filtered[k] = current[k];
+                        var isRevenge = kl.includes("bunny") ||
+                            kl.includes("vendetta") ||
+                            kl.includes("revenge") ||
+                            k === "VendettaCustomPage" ||
+                            k === "BUNNY_CUSTOM_PAGE";
+
+                        if (isRevenge) {
+                            // Return a dummy that hides the row but keeps the key
+                            // so toSettingListItems can still read .parent etc.
+                            result[k] = makeDummy(current[k]);
+                        } else {
+                            result[k] = current[k];
                         }
                     }
-                    return filtered;
+                    return result;
                 },
                 set: function(v) { current = v; }
             });
