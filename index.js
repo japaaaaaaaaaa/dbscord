@@ -21,6 +21,46 @@
         });
     }
 
+    function StealthToggle() {
+        useProxy(storage);
+        return React.createElement(FormSwitchRow, {
+            label: "Show Revenge section",
+            subLabel: "StealthRevenge — toggle to reveal the hidden Revenge section",
+            value: !storage.hidden,
+            onValueChange: function(v) { storage.hidden = !v; }
+        });
+    }
+
+    // Inject our toggle into any ScrollView found in the tree
+    function injectIntoScrollView(res) {
+        var injected = false;
+        function inject(node) {
+            if (node == null || typeof node !== "object") return node;
+            if (Array.isArray(node)) return node.map(inject);
+            var typeName = (node.type && (node.type.displayName || node.type.name)) || "";
+            if (!injected && typeName === "ScrollView") {
+                injected = true;
+                var c = Object.assign({}, node);
+                c.props = Object.assign({}, node.props);
+                var kids = Array.isArray(node.props.children)
+                    ? node.props.children
+                    : node.props.children != null ? [node.props.children] : [];
+                c.props.children = kids.concat([
+                    React.createElement(StealthToggle, { key: "stealth-toggle" })
+                ]);
+                return c;
+            }
+            if (node.props && node.props.children != null) {
+                var c = Object.assign({}, node);
+                c.props = Object.assign({}, node.props);
+                c.props.children = inject(node.props.children);
+                return c;
+            }
+            return node;
+        }
+        return inject(res);
+    }
+
     var C = {
         settings: function() {
             useProxy(storage);
@@ -73,58 +113,38 @@
                 });
             });
 
-            // ── 2. Patch SettingsVoiceScreen to append our toggle ─────────────
-            // We patch the render output directly — no key injection needed,
-            // no toSettingListItems involvement, no crash.
-            var VoiceScreen = findByName("SettingsVoiceScreen", false);
+            // ── 2. Patch SettingLayout — wraps ALL settings subscreens ────────
+            // Check route name to only inject on voice screen
+            var SettingLayout = findByName("SettingLayout", false)
+                || findByName("SettingLayout", true);
 
-            if (VoiceScreen) {
-                patches.push(after("default", VoiceScreen, function(_args, res) {
-                    if (!res) return res;
+            if (SettingLayout) {
+                patches.push(after("default", SettingLayout, function(args, res) {
+                    // args[0] is props — check if this is the voice screen
+                    var props = args[0] || {};
+                    var routeName = (props.route && (props.route.name || props.route.key)) || "";
+                    var isVoice = routeName.toLowerCase().includes("voice")
+                        || routeName.toLowerCase().includes("audio");
 
-                    var injected = false;
-
-                    function StealthToggle() {
-                        useProxy(storage);
-                        return React.createElement(FormSwitchRow, {
-                            label: "Show Revenge section",
-                            subLabel: "StealthRevenge — tap to reveal hidden Revenge settings",
-                            value: !storage.hidden,
-                            onValueChange: function(v) { storage.hidden = !v; }
-                        });
-                    }
-
-                    function inject(node) {
-                        if (node == null || typeof node !== "object") return node;
-                        if (Array.isArray(node)) return node.map(inject);
-
-                        var typeName = (node.type && (node.type.displayName || node.type.name)) || "";
-
-                        if (!injected && typeName === "ScrollView") {
-                            injected = true;
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            var kids = Array.isArray(node.props.children)
-                                ? node.props.children
-                                : node.props.children != null ? [node.props.children] : [];
-                            c.props.children = kids.concat([
-                                React.createElement(StealthToggle, { key: "stealth-toggle" })
-                            ]);
-                            return c;
-                        }
-
-                        if (node.props && node.props.children != null) {
-                            var c = Object.assign({}, node);
-                            c.props = Object.assign({}, node.props);
-                            c.props.children = inject(node.props.children);
-                            return c;
-                        }
-
-                        return node;
-                    }
-
-                    return inject(res);
+                    if (!isVoice) return res;
+                    return injectIntoScrollView(res);
                 }));
+            } else {
+                // Fallback: try all known voice screen names
+                var names = [
+                    "SettingsVoiceScreen", "VoiceAndVideoSettingsScreen",
+                    "VoiceVideoSettingsScreen", "VoiceAndVideoSettings",
+                    "VoiceSettingsScreen", "AudioVideoSettingsScreen"
+                ];
+                for (var i = 0; i < names.length; i++) {
+                    var screen = findByName(names[i], false) || findByName(names[i], true);
+                    if (screen) {
+                        patches.push(after("default", screen, function(_args, res) {
+                            return injectIntoScrollView(res);
+                        }));
+                        break;
+                    }
+                }
             }
         },
 
