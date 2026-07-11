@@ -18,42 +18,18 @@ a.storage.enabled??=true;
 a.storage.showEditor??=false;
 a.storage.defaultFind??="";
 
+// unpatch functions and a flag to prevent double-patching
 let h=[];
+let patched=false;
 
-// Apply all replacement rules to a string value
 function applyRules(rules,str){
   if(typeof str!=="string")return str;
   for(const e of rules)str=str.replace(e.re,e.to);
   return str;
 }
 
-// Recursively walk a parsed row object and apply replacements to text content
-function processNode(rules,node){
-  if(!node||typeof node!=="object")return;
-  // message content fields
-  if(node.message){
-    const msg=node.message;
-    if(msg.content)msg.content=applyRules(rules,msg.content);
-    if(msg.author){
-      if(msg.author.username)msg.author.username=applyRules(rules,msg.author.username);
-      if(msg.author.globalName)msg.author.globalName=applyRules(rules,msg.author.globalName);
-    }
-    // edited field (shown as "[edited]" label)
-    if(msg.edited)msg.edited=applyRules(rules,msg.edited);
-    // walk into content array (rich text AST)
-    if(Array.isArray(msg.content)){
-      walkAST(rules,msg.content);
-    }
-  }
-  // also handle username rows etc.
-  if(node.username)node.username=applyRules(rules,node.username);
-  if(node.text)node.text=applyRules(rules,node.text);
-  if(node.nick)node.nick=applyRules(rules,node.nick);
-  if(node.content&&typeof node.content==="string")node.content=applyRules(rules,node.content);
-  if(Array.isArray(node.content))walkAST(rules,node.content);
-}
-
 function walkAST(rules,arr){
+  if(!Array.isArray(arr))return;
   for(const node of arr){
     if(!node||typeof node!=="object")continue;
     if(typeof node.content==="string")node.content=applyRules(rules,node.content);
@@ -61,8 +37,33 @@ function walkAST(rules,arr){
   }
 }
 
+function processNode(rules,node){
+  if(!node||typeof node!=="object")return;
+  if(node.message){
+    const msg=node.message;
+    if(typeof msg.content==="string")msg.content=applyRules(rules,msg.content);
+    if(Array.isArray(msg.content))walkAST(rules,msg.content);
+    if(msg.author){
+      if(msg.author.username)msg.author.username=applyRules(rules,msg.author.username);
+      if(msg.author.globalName)msg.author.globalName=applyRules(rules,msg.author.globalName);
+    }
+    if(typeof msg.edited==="string")msg.edited=applyRules(rules,msg.edited);
+  }
+  if(typeof node.username==="string")node.username=applyRules(rules,node.username);
+  if(typeof node.nick==="string")node.nick=applyRules(rules,node.nick);
+  if(typeof node.text==="string")node.text=applyRules(rules,node.text);
+}
+
 const U=function(){
-  // Strategy 1: patch DCDChatManager.updateRows (current Discord mobile, iOS & Android)
+  // Guard: never register patches more than once
+  if(patched){
+    console.log("[TR] already patched, skipping");
+    return;
+  }
+
+  let registered=false;
+
+  // Strategy 1: DCDChatManager.updateRows (modern Discord mobile)
   const RN=y.General;
   const DCDChatManager=RN&&RN.NativeModules&&RN.NativeModules.DCDChatManager;
   if(DCDChatManager&&typeof DCDChatManager.updateRows==="function"){
@@ -74,44 +75,47 @@ const U=function(){
         const rows=JSON.parse(args[1]);
         for(const row of rows)processNode(rules,row);
         args[1]=JSON.stringify(rows);
-      }catch(err){console.log("[TR] updateRows patch error",err);}
+      }catch(err){console.log("[TR] updateRows error",err);}
     }));
-  }else{
-    console.log("[TR] DCDChatManager not found, trying RowManager...");
+    registered=true;
   }
 
-  // Strategy 2: also try RowManager.generate as fallback (older Discord versions)
-  // findByName checks m.name === "RowManager" on the default export
+  // Strategy 2: RowManager.generate via findByName (older Discord)
   const RM=d.findByName("RowManager");
   if(RM&&RM.prototype&&typeof RM.prototype.generate==="function"){
-    console.log("[TR] patching RowManager.generate");
+    console.log("[TR] patching RowManager.generate (findByName)");
     h.push(b.before("generate",RM.prototype,function([r]){
       try{
         const rules=E();
         if(!rules.length)return;
         processNode(rules,r);
-      }catch(err){console.log("[TR] generate patch error",err);}
+      }catch(err){console.log("[TR] generate error",err);}
     }));
+    registered=true;
   }
 
-  // Strategy 3: findByProps fallback for RowManager
+  // Strategy 3: RowManager via findByProps (older Discord fallback)
   if(!RM){
-    const RMModule=d.findByProps("RowManager");
-    const RMClass=RMModule&&RMModule.RowManager;
-    if(RMClass&&RMClass.prototype&&typeof RMClass.prototype.generate==="function"){
-      console.log("[TR] patching RowManager (via findByProps) .generate");
-      h.push(b.before("generate",RMClass.prototype,function([r]){
+    const RMM=d.findByProps("RowManager");
+    const RMC=RMM&&RMM.RowManager;
+    if(RMC&&RMC.prototype&&typeof RMC.prototype.generate==="function"){
+      console.log("[TR] patching RowManager.generate (findByProps)");
+      h.push(b.before("generate",RMC.prototype,function([r]){
         try{
           const rules=E();
           if(!rules.length)return;
           processNode(rules,r);
-        }catch(err){console.log("[TR] generate patch error (props)",err);}
+        }catch(err){console.log("[TR] generate error (props)",err);}
       }));
+      registered=true;
     }
   }
 
-  if(!DCDChatManager&&!RM){
-    console.log("[TR] No patchable target found yet, retrying in 1s...");
+  if(registered){
+    patched=true;
+    console.log("[TR] patches registered, patched=true");
+  }else{
+    console.log("[TR] nothing found yet, retrying in 1s...");
     setTimeout(U,1000);
   }
 };
@@ -161,12 +165,17 @@ var C={
   },
   onLoad(){
     console.log("[TR] onLoad");
+    // Reset state cleanly on each load, in case onUnload didn't fire
+    h.forEach(function(t){try{t&&t();}catch{}});
+    h=[];
+    patched=false;
     U();
   },
   onUnload(){
     console.log("[TR] onUnload");
     h.forEach(function(t){try{t&&t();}catch{}});
     h=[];
+    patched=false;
   }
 };
 
