@@ -1,10 +1,8 @@
 (function(u,y,a,w,l,d,b,s){"use strict";
 const{ScrollView:x,Text:F,View:S,TextInput:_,Button:f}=y.General,{FormRow:v,FormIcon:i,FormDivider:g,FormSwitchRow:m}=y.Forms;
 
-// Escape string for use in RegExp
 const T=function(t){return t.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");};
 
-// Build active rule list from storage — fixed: removed the broken .replace.includes(.find) guard
 const E=function(){
   if(!a.storage.enabled)return[];
   return JSON.parse(a.storage.rules||"[]").map(function(t){
@@ -15,7 +13,6 @@ const E=function(){
   }).filter(Boolean);
 };
 
-// Defaults
 a.storage.rules??=JSON.stringify([{find:"old",replace:"new",regex:false,ci:false}]);
 a.storage.enabled??=true;
 a.storage.showEditor??=false;
@@ -23,60 +20,103 @@ a.storage.defaultFind??="";
 
 let h=[];
 
+// Apply all replacement rules to a string value
+function applyRules(rules,str){
+  if(typeof str!=="string")return str;
+  for(const e of rules)str=str.replace(e.re,e.to);
+  return str;
+}
+
+// Recursively walk a parsed row object and apply replacements to text content
+function processNode(rules,node){
+  if(!node||typeof node!=="object")return;
+  // message content fields
+  if(node.message){
+    const msg=node.message;
+    if(msg.content)msg.content=applyRules(rules,msg.content);
+    if(msg.author){
+      if(msg.author.username)msg.author.username=applyRules(rules,msg.author.username);
+      if(msg.author.globalName)msg.author.globalName=applyRules(rules,msg.author.globalName);
+    }
+    // edited field (shown as "[edited]" label)
+    if(msg.edited)msg.edited=applyRules(rules,msg.edited);
+    // walk into content array (rich text AST)
+    if(Array.isArray(msg.content)){
+      walkAST(rules,msg.content);
+    }
+  }
+  // also handle username rows etc.
+  if(node.username)node.username=applyRules(rules,node.username);
+  if(node.text)node.text=applyRules(rules,node.text);
+  if(node.nick)node.nick=applyRules(rules,node.nick);
+  if(node.content&&typeof node.content==="string")node.content=applyRules(rules,node.content);
+  if(Array.isArray(node.content))walkAST(rules,node.content);
+}
+
+function walkAST(rules,arr){
+  for(const node of arr){
+    if(!node||typeof node!=="object")continue;
+    if(typeof node.content==="string")node.content=applyRules(rules,node.content);
+    if(Array.isArray(node.content))walkAST(rules,node.content);
+  }
+}
+
 const U=function(){
-  // RowManager is not a named default export — find it by its props
-  const RowManagerModule=d.findByProps("RowManager");
-  const B=RowManagerModule&&RowManagerModule.RowManager;
-  if(!B||!B.prototype||typeof B.prototype.generate!=="function"){
-    console.log("[TR] RowManager not ready, retrying...");
-    setTimeout(U,500);
-    return;
+  // Strategy 1: patch DCDChatManager.updateRows (current Discord mobile, iOS & Android)
+  const RN=y.General;
+  const DCDChatManager=RN&&RN.NativeModules&&RN.NativeModules.DCDChatManager;
+  if(DCDChatManager&&typeof DCDChatManager.updateRows==="function"){
+    console.log("[TR] patching DCDChatManager.updateRows");
+    h.push(b.before("updateRows",DCDChatManager,function(args){
+      try{
+        const rules=E();
+        if(!rules.length)return;
+        const rows=JSON.parse(args[1]);
+        for(const row of rows)processNode(rules,row);
+        args[1]=JSON.stringify(rows);
+      }catch(err){console.log("[TR] updateRows patch error",err);}
+    }));
+  }else{
+    console.log("[TR] DCDChatManager not found, trying RowManager...");
   }
 
-  const t=d.findByStoreName("UserStore");
-  const c=d.findByProps("put","del","post");
+  // Strategy 2: also try RowManager.generate as fallback (older Discord versions)
+  // findByName checks m.name === "RowManager" on the default export
+  const RM=d.findByName("RowManager");
+  if(RM&&RM.prototype&&typeof RM.prototype.generate==="function"){
+    console.log("[TR] patching RowManager.generate");
+    h.push(b.before("generate",RM.prototype,function([r]){
+      try{
+        const rules=E();
+        if(!rules.length)return;
+        processNode(rules,r);
+      }catch(err){console.log("[TR] generate patch error",err);}
+    }));
+  }
 
-  // Patch RowManager.prototype.generate to rewrite messages before rendering
-  h.push(b.before("generate",B.prototype,function([r]){
-    try{
-      const o=E();
-      if(!o.length)return;
-      for(const e of o){
-        if(r?.message?.content)
-          r.message.content=r.message.content.replace(e.re,e.to);
-        if(r?.message?.author?.username)
-          r.message.author.username=r.message.author.username.replace(e.re,e.to);
-        if(r?.message?.author?.globalName)
-          r.message.author.globalName=r.message.author.globalName.replace(e.re,e.to);
-        if(r?.message?.author?.avatar)
-          r.message.author.avatar=r.message.author.avatar.replace(e.re,e.to);
-        if(r?.message?.author?.primaryGuild?.tag)
-          r.message.author.primaryGuild.tag=r.message.author.primaryGuild.tag.replace(e.re,e.to);
-        if(r?.message?.author?.primaryGuild?.badge)
-          r.message.author.primaryGuild.badge=r.message.author.primaryGuild.badge.replace(e.re,e.to);
-        if(r?.message?.author?.primaryGuild?.identityGuildId)
-          r.message.author.primaryGuild.identityGuildId=r.message.author.primaryGuild.identityGuildId.replace(e.re,e.to);
-        if(r?.message?.attachments?.length)
-          r.message.attachments.forEach(function(n){
-            if(n.url?.match(e.re)){n.url=e.to;n.proxy_url=e.to;}
-          });
-        // Author ID replacement
-        if(r?.message?.author?.id){
-          const newId=r.message.author.id.replace(e.re,e.to);
-          if(newId!==r.message.author.id&&/^\d+$/.test(newId)){
-            const target=t&&t.getUser(newId);
-            if(target){r.message.author=target;}
-            else{r.message.author.id=newId;}
-          }
-        }
-      }
-    }catch(err){console.log("[TR] generate patch error",err);}
-  }));
+  // Strategy 3: findByProps fallback for RowManager
+  if(!RM){
+    const RMModule=d.findByProps("RowManager");
+    const RMClass=RMModule&&RMModule.RowManager;
+    if(RMClass&&RMClass.prototype&&typeof RMClass.prototype.generate==="function"){
+      console.log("[TR] patching RowManager (via findByProps) .generate");
+      h.push(b.before("generate",RMClass.prototype,function([r]){
+        try{
+          const rules=E();
+          if(!rules.length)return;
+          processNode(rules,r);
+        }catch(err){console.log("[TR] generate patch error (props)",err);}
+      }));
+    }
+  }
 
-  console.log("[TR] RowManager patched successfully");
+  if(!DCDChatManager&&!RM){
+    console.log("[TR] No patchable target found yet, retrying in 1s...");
+    setTimeout(U,1000);
+  }
 };
 
-// Settings UI — rule editor
+// Settings UI
 const A=function(){
   const t=JSON.parse(a.storage.rules||"[]");
   const c=function(o){a.storage.rules=JSON.stringify(o);};
