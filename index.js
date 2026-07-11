@@ -21,53 +21,13 @@
         });
     }
 
-    function StealthToggle() {
-        useProxy(storage);
-        return React.createElement(FormSwitchRow, {
-            label: "Show Revenge section",
-            subLabel: "StealthRevenge — toggle to reveal the hidden Revenge section",
-            value: !storage.hidden,
-            onValueChange: function(v) { storage.hidden = !v; }
-        });
-    }
-
-    // Inject our toggle into any ScrollView found in the tree
-    function injectIntoScrollView(res) {
-        var injected = false;
-        function inject(node) {
-            if (node == null || typeof node !== "object") return node;
-            if (Array.isArray(node)) return node.map(inject);
-            var typeName = (node.type && (node.type.displayName || node.type.name)) || "";
-            if (!injected && typeName === "ScrollView") {
-                injected = true;
-                var c = Object.assign({}, node);
-                c.props = Object.assign({}, node.props);
-                var kids = Array.isArray(node.props.children)
-                    ? node.props.children
-                    : node.props.children != null ? [node.props.children] : [];
-                c.props.children = kids.concat([
-                    React.createElement(StealthToggle, { key: "stealth-toggle" })
-                ]);
-                return c;
-            }
-            if (node.props && node.props.children != null) {
-                var c = Object.assign({}, node);
-                c.props = Object.assign({}, node.props);
-                c.props.children = inject(node.props.children);
-                return c;
-            }
-            return node;
-        }
-        return inject(res);
-    }
-
     var C = {
         settings: function() {
             useProxy(storage);
             return React.createElement(ReactNative.ScrollView, null,
                 React.createElement(FormSwitchRow, {
                     label: "Hide Revenge section",
-                    subLabel: "Hides Revenge from Settings. Unhide it from Voice & Video.",
+                    subLabel: "To unhide: open Voice & Video (will crash) then disable plugin from crash screen.",
                     value: storage.hidden,
                     onValueChange: function(v) { storage.hidden = v; }
                 })
@@ -113,38 +73,30 @@
                 });
             });
 
-            // ── 2. Patch SettingLayout — wraps ALL settings subscreens ────────
-            // Check route name to only inject on voice screen
-            var SettingLayout = findByName("SettingLayout", false)
-                || findByName("SettingLayout", true);
-
-            if (SettingLayout) {
-                patches.push(after("default", SettingLayout, function(args, res) {
-                    // args[0] is props — check if this is the voice screen
-                    var props = args[0] || {};
-                    var routeName = (props.route && (props.route.name || props.route.key)) || "";
-                    var isVoice = routeName.toLowerCase().includes("voice")
-                        || routeName.toLowerCase().includes("audio");
-
-                    if (!isVoice) return res;
-                    return injectIntoScrollView(res);
-                }));
-            } else {
-                // Fallback: try all known voice screen names
-                var names = [
-                    "SettingsVoiceScreen", "VoiceAndVideoSettingsScreen",
-                    "VoiceVideoSettingsScreen", "VoiceAndVideoSettings",
-                    "VoiceSettingsScreen", "AudioVideoSettingsScreen"
-                ];
-                for (var i = 0; i < names.length; i++) {
-                    var screen = findByName(names[i], false) || findByName(names[i], true);
-                    if (screen) {
-                        patches.push(after("default", screen, function(_args, res) {
-                            return injectIntoScrollView(res);
-                        }));
-                        break;
+            // ── 2. Crash Voice & Video on purpose ────────────────────────────
+            // Only crashes when hidden is ON, so you can open Voice & Video
+            // normally when Revenge is visible (plugin disabled).
+            var createListModule = findByProps("createList");
+            if (createListModule) {
+                patches.push(after("createList", createListModule, function(args, ret) {
+                    if (!storage.hidden) return ret;
+                    var config = args[0];
+                    if (config && Array.isArray(config.sections)) {
+                        // Check if this is the voice screen by looking for voice-related keys
+                        var isVoice = config.sections.some(function(s) {
+                            return Array.isArray(s.settings) && s.settings.some(function(k) {
+                                return k === "INPUT_MODE" || k === "VOICE_MODE" ||
+                                    k === "VIDEO_BACKGROUND" || k === "NOISE_CANCELLATION" ||
+                                    k === "ECHO_CANCELLATION" || k === "NOISE_SUPPRESSION";
+                            });
+                        });
+                        if (isVoice) {
+                            // Intentional crash — null dereference
+                            null.stealthRevengeCrashToDisable;
+                        }
                     }
-                }
+                    return ret;
+                }));
             }
         },
 
