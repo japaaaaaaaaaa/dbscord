@@ -1,35 +1,38 @@
-const { after } = vendetta.patcher;
-const { findByName } = vendetta.metro;
-const React = vendetta.metro.common.React;
-const ReactNative = vendetta.metro.common.ReactNative;
-const { useProxy } = vendetta.storage;
-const { Forms } = vendetta.ui.components;
-const storage = vendetta.plugin.storage;
-
-storage.hidden ??= false;
+var patches = [];
 
 function isRevengeSection(section) {
     if (!section || !section.label) return false;
-    const lbl = section.label.toLowerCase();
+    var lbl = section.label.toLowerCase();
     return lbl.includes("revenge") || lbl.includes("bunny") || lbl.includes("vendetta");
 }
 
-function Settings() {
-    useProxy(storage);
-    return React.createElement(ReactNative.ScrollView, null,
-        React.createElement(Forms.FormSwitchRow, {
-            label: "Hide Revenge section",
-            subLabel: "Removes the Revenge section from Discord's Settings list.",
-            value: storage.hidden,
-            onValueChange: function(v) { storage.hidden = v; }
-        })
-    );
-}
-
-var patches = [];
-
 return {
     onLoad: function() {
+        var after = vendetta.patcher.after;
+        var findByName = vendetta.metro.findByName;
+        var React = vendetta.metro.common.React;
+        var ReactNative = vendetta.metro.common.ReactNative;
+        var useProxy = vendetta.storage.useProxy;
+        var Forms = vendetta.ui.components.Forms;
+        var storage = vendetta.plugin.storage;
+
+        storage.hidden ??= false;
+
+        function Settings() {
+            useProxy(storage);
+            return React.createElement(ReactNative.ScrollView, null,
+                React.createElement(Forms.FormSwitchRow, {
+                    label: "Hide Revenge section",
+                    subLabel: "Removes the Revenge section from Discord's Settings list.",
+                    value: storage.hidden,
+                    onValueChange: function(v) { storage.hidden = v; }
+                })
+            );
+        }
+
+        // expose settings for plugin settings page
+        vendetta.plugin.storage.__settingsComponent = Settings;
+
         var OverviewScreen = findByName("UserSettingsOverviewScreen", false);
         if (OverviewScreen) {
             patches.push(after("default", OverviewScreen, function(_args, res) {
@@ -96,5 +99,21 @@ return {
         patches = [];
     },
 
-    settings: Settings
+    settings: function() {
+        var useProxy = vendetta.storage.useProxy;
+        var Forms = vendetta.ui.components.Forms;
+        var React = vendetta.metro.common.React;
+        var ReactNative = vendetta.metro.common.ReactNative;
+        var storage = vendetta.plugin.storage;
+
+        useProxy(storage);
+        return React.createElement(ReactNative.ScrollView, null,
+            React.createElement(Forms.FormSwitchRow, {
+                label: "Hide Revenge section",
+                subLabel: "Removes the Revenge section from Discord's Settings list.",
+                value: storage.hidden ?? false,
+                onValueChange: function(v) { storage.hidden = v; }
+            })
+        );
+    }
 };
