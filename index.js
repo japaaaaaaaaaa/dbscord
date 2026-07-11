@@ -2,10 +2,11 @@
     "use strict";
 
     var FormSwitchRow = y.Forms.FormSwitchRow;
-    var FormSection = y.Forms.FormSection;
     var React = vendetta.metro.common.React;
     var ReactNative = vendetta.metro.common.ReactNative;
+    var after = b.after;
     var findByProps = d.findByProps;
+    var findByName = d.findByName;
     var storage = a.storage;
     var useProxy = w.useProxy;
 
@@ -17,17 +18,6 @@
         return Object.assign({}, orig, {
             usePredicate: function() { return false; },
             predicate: function() { return false; }
-        });
-    }
-
-    // Custom settings row component rendered by our injected key
-    function StealthRevengeRow() {
-        useProxy(storage);
-        return React.createElement(FormSwitchRow, {
-            label: "Show Revenge section",
-            subLabel: "StealthRevenge — toggle to reveal the hidden Revenge section",
-            value: !storage.hidden,
-            onValueChange: function(v) { storage.hidden = !v; }
         });
     }
 
@@ -45,6 +35,7 @@
         },
 
         onLoad: function() {
+            // ── 1. Hide Revenge rows ──────────────────────────────────────────
             var settingConstants = findByProps("SETTING_RENDERER_CONFIG");
             if (!settingConstants) return;
 
@@ -55,28 +46,9 @@
                 configurable: true,
                 enumerable: true,
                 get: function() {
-                    var base = current;
-
-                    // Always inject our toggle key into the Voice & Video section
-                    var result = Object.assign({}, base, {
-                        STEALTH_REVENGE_TOGGLE: {
-                            type: "pressable",
-                            title: function() { return "Show Revenge section"; },
-                            useTitle: function() { return "Show Revenge section"; },
-                            usePredicate: function() { return true; },
-                            // Render our React component inline
-                            render: StealthRevengeRow,
-                            withArrow: false,
-                            parent: "VOICE_VIDEO",
-                            // put it in the VOICE_VIDEO section
-                            section: "VOICE_VIDEO"
-                        }
-                    });
-
-                    if (!storage.hidden) return result;
-
-                    // Also hide Revenge keys when hidden is on
-                    var keys = Object.keys(result);
+                    if (!storage.hidden) return current;
+                    var result = {};
+                    var keys = Object.keys(current);
                     for (var i = 0; i < keys.length; i++) {
                         var k = keys[i];
                         var kl = k.toLowerCase();
@@ -85,41 +57,12 @@
                             kl.includes("revenge") ||
                             k === "VendettaCustomPage" ||
                             k === "BUNNY_CUSTOM_PAGE";
-                        if (isRevenge) {
-                            result[k] = makeDummy(result[k]);
-                        }
+                        result[k] = isRevenge ? makeDummy(current[k]) : current[k];
                     }
-
                     return result;
                 },
                 set: function(v) { current = v; }
             });
-
-            // Also inject STEALTH_REVENGE_TOGGLE into the VOICE_VIDEO settings array
-            var createListModule = findByProps("createList");
-            if (createListModule) {
-                patches.push(d.findByProps && (function() {
-                    var after = b.after;
-                    return after("createList", createListModule, function(args, ret) {
-                        var config = args[0];
-                        if (config && Array.isArray(config.sections)) {
-                            for (var i = 0; i < config.sections.length; i++) {
-                                var s = config.sections[i];
-                                if (Array.isArray(s.settings) &&
-                                    (s.settings.indexOf("INPUT_MODE") !== -1 ||
-                                     s.settings.indexOf("VOICE_MODE") !== -1 ||
-                                     (s.label || "").toLowerCase().includes("voice"))) {
-                                    // Add our key to this section if not already there
-                                    if (s.settings.indexOf("STEALTH_REVENGE_TOGGLE") === -1) {
-                                        s.settings = s.settings.concat(["STEALTH_REVENGE_TOGGLE"]);
-                                    }
-                                }
-                            }
-                        }
-                        return ret;
-                    });
-                })());
-            }
 
             patches.push(function() {
                 Object.defineProperty(settingConstants, "SETTING_RENDERER_CONFIG", {
@@ -129,6 +72,60 @@
                     value: orig
                 });
             });
+
+            // ── 2. Patch SettingsVoiceScreen to append our toggle ─────────────
+            // We patch the render output directly — no key injection needed,
+            // no toSettingListItems involvement, no crash.
+            var VoiceScreen = findByName("SettingsVoiceScreen", false);
+
+            if (VoiceScreen) {
+                patches.push(after("default", VoiceScreen, function(_args, res) {
+                    if (!res) return res;
+
+                    var injected = false;
+
+                    function StealthToggle() {
+                        useProxy(storage);
+                        return React.createElement(FormSwitchRow, {
+                            label: "Show Revenge section",
+                            subLabel: "StealthRevenge — tap to reveal hidden Revenge settings",
+                            value: !storage.hidden,
+                            onValueChange: function(v) { storage.hidden = !v; }
+                        });
+                    }
+
+                    function inject(node) {
+                        if (node == null || typeof node !== "object") return node;
+                        if (Array.isArray(node)) return node.map(inject);
+
+                        var typeName = (node.type && (node.type.displayName || node.type.name)) || "";
+
+                        if (!injected && typeName === "ScrollView") {
+                            injected = true;
+                            var c = Object.assign({}, node);
+                            c.props = Object.assign({}, node.props);
+                            var kids = Array.isArray(node.props.children)
+                                ? node.props.children
+                                : node.props.children != null ? [node.props.children] : [];
+                            c.props.children = kids.concat([
+                                React.createElement(StealthToggle, { key: "stealth-toggle" })
+                            ]);
+                            return c;
+                        }
+
+                        if (node.props && node.props.children != null) {
+                            var c = Object.assign({}, node);
+                            c.props = Object.assign({}, node.props);
+                            c.props.children = inject(node.props.children);
+                            return c;
+                        }
+
+                        return node;
+                    }
+
+                    return inject(res);
+                }));
+            }
         },
 
         onUnload: function() {
